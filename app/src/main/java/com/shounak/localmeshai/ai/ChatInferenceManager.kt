@@ -1306,7 +1306,7 @@ class ChatInferenceManager(context: Context) {
         publisher: StreamingResponsePublisher?,
         responseController: InferenceResponseController?,
         onUpdate: (String) -> Unit
-    ) {
+    ): String {
         timing?.recordPrefillStart()
         var isFirstToken = true
         var tokenCount = 0
@@ -1346,6 +1346,7 @@ class ChatInferenceManager(context: Context) {
                 evaluatedPromptTokens = prompt.length / 4
             )
         )
+        return publisher?.rawText.orEmpty()
     }
 
     private suspend fun streamLlamaCpp(
