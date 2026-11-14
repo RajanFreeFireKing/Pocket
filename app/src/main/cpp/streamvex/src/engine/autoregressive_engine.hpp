@@ -14,7 +14,7 @@
 #include "../resource/resource_intelligence.hpp"
 #include "../memory/hierarchical_memory.hpp"
 #include "../scheduler/compute_scheduler.hpp"
-#include "../../third_party/llama.cpp/include/llama.h"
+#include "llama.h"
 
 namespace streamvex {
 
