@@ -2791,7 +2791,7 @@ fun ModelItem(
                             showStreamVexDialog = true
                             isCheckingStreamVex = true
                             diagScope.launch(Dispatchers.IO) {
-                                val p = model.localPath ?: model.bundle?.basePath ?: ""
+                                val p = model.localPath ?: model.bundle?.mainArtifacts?.firstOrNull()?.source?.location ?: ""
                                 val res = StreamVexModelManager.validateModelFile(p)
                                 val meta = StreamVexModelManager.inspectGguf(p)
                                 withContext(Dispatchers.Main) {
