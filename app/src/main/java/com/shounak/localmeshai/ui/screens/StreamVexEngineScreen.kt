@@ -456,7 +456,7 @@ private fun StatusAndControlsTab(
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Icon(Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Simulate Android Memory Pressure Trim", fontSize = 12.sp)
                 }
@@ -515,7 +515,7 @@ private fun BenchmarkTab(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Benchmarking...", fontSize = 13.sp)
                     } else {
-                        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Run Real Hardware Benchmark", fontSize = 13.sp)
                     }

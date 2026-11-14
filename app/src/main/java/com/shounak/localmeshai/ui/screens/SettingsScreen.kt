@@ -503,7 +503,7 @@ fun SettingsDialog(
                                     onClick = { showStreamVexEngine = true }
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text("Open Engine Manager & Benchmarks")
                                     }
