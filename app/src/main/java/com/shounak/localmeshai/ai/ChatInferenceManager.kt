@@ -1328,7 +1328,7 @@ class ChatInferenceManager(context: Context) {
                 }
                 tokenCount++
                 publisher?.appendDelta(token.text)
-                responseController?.append(token.text)
+                responseController?.appendDelta(token.text)
                 publisher?.notifyStructuredUpdate()
                 onUpdate(token.text)
             }
