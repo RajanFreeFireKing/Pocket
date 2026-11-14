@@ -157,6 +157,9 @@ android {
                 "**/mips/**",
                 "**/mips64/**"
             )
+            pickFirsts += listOf(
+                "**/libstreamvex.so"
+            )
         }
     }
 }
