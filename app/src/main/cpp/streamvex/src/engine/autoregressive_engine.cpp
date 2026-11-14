@@ -59,12 +59,11 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
 
     // Model configuration
     llama_model_params mparams = llama_model_default_params();
-    mparams.use_mmap = true;
-    mparams.use_mlock = false;
+    mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
 
-    m_model = llama_load_model_from_file(model_path.c_str(), mparams);
+    m_model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!m_model) {
-        std::cerr << "[AutoregressiveEngine] Error: llama_load_model_from_file failed for: " << model_path << "\n";
+        std::cerr << "[AutoregressiveEngine] Error: llama_model_load_from_file failed for: " << model_path << "\n";
         return false;
     }
 
@@ -83,10 +82,10 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
     cparams.n_threads = m_n_threads;
     cparams.n_threads_batch = m_n_threads;
 
-    m_ctx = llama_new_context_with_model(m_model, cparams);
+    m_ctx = llama_init_from_model(m_model, cparams);
     if (!m_ctx) {
-        std::cerr << "[AutoregressiveEngine] Error: llama_new_context_with_model failed.\n";
-        llama_free_model(m_model);
+        std::cerr << "[AutoregressiveEngine] Error: llama_init_from_model failed.\n";
+        llama_model_free(m_model);
         m_model = nullptr;
         return false;
     }
@@ -104,8 +103,9 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
     m_abort_requested.store(false);
     m_is_initialized.store(true);
 
+    const struct llama_vocab * vocab = llama_model_get_vocab(m_model);
     std::cout << "[AutoregressiveEngine] Loaded authentic model: " << model_path
-              << " | Vocab: " << llama_n_vocab(m_model)
+              << " | Vocab: " << (vocab ? llama_vocab_n_tokens(vocab) : 0)
               << " | Context: " << m_n_ctx
               << " | Threads: " << m_n_threads
               << " | Resident RAM: " << std::fixed << std::setprecision(1) << m_telemetry.baseline_ram_mb << " MB\n";
@@ -144,11 +144,17 @@ int AutoregressiveEngine::generate_stream(
         formatted_prompt = prompt;
     }
 
+    const struct llama_vocab * vocab = llama_model_get_vocab(m_model);
+    if (!vocab) {
+        callback("[StreamVex Error]: Failed to get model vocabulary.");
+        return -4;
+    }
+
     // Authentic Tokenization via Model Vocabulary
     int n_tokens_alloc = static_cast<int>(formatted_prompt.size()) + 64;
     std::vector<llama_token> prompt_tokens(n_tokens_alloc);
     int n_tokens = llama_tokenize(
-        m_model,
+        vocab,
         formatted_prompt.c_str(),
         formatted_prompt.length(),
         prompt_tokens.data(),
@@ -160,7 +166,7 @@ int AutoregressiveEngine::generate_stream(
     if (n_tokens < 0) {
         prompt_tokens.resize(-n_tokens);
         n_tokens = llama_tokenize(
-            m_model,
+            vocab,
             formatted_prompt.c_str(),
             formatted_prompt.length(),
             prompt_tokens.data(),
@@ -176,8 +182,8 @@ int AutoregressiveEngine::generate_stream(
         return -4;
     }
 
-    // Reset KV cache for clean sequence
-    llama_kv_cache_clear(m_ctx);
+    // Reset memory for clean sequence
+    llama_memory_clear(llama_get_memory(m_ctx), true);
 
     float ttft_ms = 0.0f;
     int n_past = 0;
@@ -215,14 +221,26 @@ int AutoregressiveEngine::generate_stream(
     double prefill_sec = std::chrono::duration<double>(t_prefill_end - t_prefill_start).count();
     m_telemetry.prefill_tok_per_sec = prefill_sec > 0.001 ? static_cast<float>(n_tokens / prefill_sec) : 0.0f;
 
-    // Autoregressive Generation Loop
-    int n_vocab = llama_n_vocab(m_model);
-    llama_token eos_token = llama_token_eos(m_model);
+    // Autoregressive Generation Loop with modern llama_sampler_chain
+    int n_vocab = llama_vocab_n_tokens(vocab);
+    llama_token eos_token = llama_vocab_eos(vocab);
     int gen_count = 0;
     int max_gen = max_tokens > 0 ? max_tokens : 256;
 
-    std::vector<llama_token_data> candidates;
-    candidates.reserve(n_vocab);
+    llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+    llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    if (top_k > 0) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+    }
+    if (top_p > 0.0f && top_p < 1.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+    }
+    if (temperature > 0.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    } else {
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    }
 
     for (int i = 0; i < max_gen; ++i) {
         if (m_abort_requested.load()) {
@@ -234,33 +252,22 @@ int AutoregressiveEngine::generate_stream(
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
 
-        // Retrieve logits from last decoded position
-        float* logits = llama_get_logits_ith(m_ctx, batch.n_tokens - 1);
-        candidates.clear();
-        for (llama_token id = 0; id < n_vocab; ++id) {
-            candidates.push_back({ id, logits[id], 0.0f });
-        }
-        llama_token_data_array candidates_p = { candidates.data(), candidates.size(), false };
-
-        // Apply samplers
-        llama_sample_top_k(m_ctx, &candidates_p, top_k, 1);
-        llama_sample_top_p(m_ctx, &candidates_p, top_p, 1);
-        llama_sample_temp(m_ctx, &candidates_p, temperature);
-        llama_token new_token_id = llama_sample_token(m_ctx, &candidates_p);
+        llama_token new_token_id = llama_sampler_sample(smpl, m_ctx, -1);
+        llama_sampler_accept(smpl, new_token_id);
 
         if (i == 0) {
             auto t_first = std::chrono::high_resolution_clock::now();
             ttft_ms = std::chrono::duration<float, std::milli>(t_first - t_start).count();
         }
 
-        // Stop on EOS
-        if (new_token_id == eos_token) {
+        // Stop on EOS or EOG
+        if (new_token_id == eos_token || llama_vocab_is_eog(vocab, new_token_id)) {
             break;
         }
 
         // Decode token to UTF-8 text chunk
         char piece_buf[64] = {0};
-        int n_chars = llama_token_to_piece(m_model, new_token_id, piece_buf, sizeof(piece_buf) - 1, 0, false);
+        int n_chars = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf) - 1, 0, false);
         if (n_chars > 0) {
             piece_buf[n_chars] = '\0';
             if (strstr(piece_buf, "<|im_end|>") || strstr(piece_buf, "<|endoftext|>") || strstr(piece_buf, "</s>")) {
@@ -287,6 +294,7 @@ int AutoregressiveEngine::generate_stream(
         }
     }
 
+    llama_sampler_free(smpl);
     llama_batch_free(batch);
 
     auto t_end = std::chrono::high_resolution_clock::now();
@@ -337,20 +345,16 @@ int AutoregressiveEngine::forward_pass_step(
         return -3;
     }
 
-    int n_vocab = llama_n_vocab(m_model);
-    float* logits = llama_get_logits_ith(m_ctx, 0);
+    llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+    llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9f, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.7f));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
-    std::vector<llama_token_data> candidates;
-    candidates.reserve(n_vocab);
-    for (llama_token id = 0; id < n_vocab; ++id) {
-        candidates.push_back({ id, logits[id], 0.0f });
-    }
-    llama_token_data_array candidates_p = { candidates.data(), candidates.size(), false };
-
-    llama_sample_top_k(m_ctx, &candidates_p, 40, 1);
-    llama_sample_top_p(m_ctx, &candidates_p, 0.9f, 1);
-    llama_sample_temp(m_ctx, &candidates_p, 0.7f);
-    llama_token next_token = llama_sample_token(m_ctx, &candidates_p);
+    llama_token next_token = llama_sampler_sample(smpl, m_ctx, -1);
+    llama_sampler_accept(smpl, next_token);
+    llama_sampler_free(smpl);
 
     llama_batch_free(batch);
 
@@ -378,7 +382,7 @@ void AutoregressiveEngine::release() {
         m_ctx = nullptr;
     }
     if (m_model) {
-        llama_free_model(m_model);
+        llama_model_free(m_model);
         m_model = nullptr;
     }
     m_streamer->stop();
