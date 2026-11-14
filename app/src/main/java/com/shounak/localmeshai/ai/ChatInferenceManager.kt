@@ -1313,7 +1313,7 @@ class ChatInferenceManager(context: Context) {
         val startMs = System.currentTimeMillis()
         var firstTokenMs = 0L
 
-        onProgress?.invoke(RequestProgress(phase = "generating", progress = 0.0f))
+        onProgress?.invoke(RequestProgress.Generating)
 
         com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().generate(prompt).collect { token ->
             if (token.errorMessage != null && token.errorMessage != "Cancelled") {
