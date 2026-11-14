@@ -108,6 +108,9 @@ import com.shounak.localmeshai.ai.NonGgufBenchmarkRunner
 import com.shounak.localmeshai.ai.BenchmarkProgress
 import com.shounak.localmeshai.ai.BenchmarkResult
 import com.shounak.localmeshai.ai.GgufGpuValidator
+import com.shounak.localmeshai.core.streamvex.model.StreamVexModelManager
+import com.shounak.localmeshai.core.streamvex.api.StreamVexValidationResult
+import org.json.JSONObject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import androidx.compose.ui.window.DialogProperties
@@ -2717,6 +2720,96 @@ fun ModelItem(
                         Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Diag")
+                    }
+                }
+
+                var showStreamVexDialog by remember { mutableStateOf(false) }
+                var streamVexValidationResult by remember { mutableStateOf<StreamVexValidationResult?>(null) }
+                var streamVexGgufMeta by remember { mutableStateOf<JSONObject?>(null) }
+                var isCheckingStreamVex by remember { mutableStateOf(false) }
+
+                if (showStreamVexDialog) {
+                    AlertDialog(
+                        onDismissRequest = { if (!isCheckingStreamVex) showStreamVexDialog = false },
+                        title = { Text("⚡ StreamVex Native Engine") },
+                        text = {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (isCheckingStreamVex) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                        Text("Validating GGUF architecture & memory budget...", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                } else {
+                                    val res = streamVexValidationResult
+                                    val meta = streamVexGgufMeta
+                                    if (res != null) {
+                                        Text(
+                                            if (res.isCompatible) "✅ Fully Compatible with StreamVex Core Engine" else "⚠️ Validation Warning",
+                                            color = if (res.isCompatible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text("Status: ${res.message}", style = MaterialTheme.typography.bodySmall)
+                                        if (res.suggestedModel.isNotBlank()) {
+                                            Text("Architecture: ${res.suggestedModel}", style = MaterialTheme.typography.bodySmall)
+                                        }
+                                        Text("Recommended Context: ${res.suggestedContext} tokens", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    if (meta != null && meta.length() > 0) {
+                                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                        Text("Architecture: ${meta.optString("architecture", "unknown")}", style = MaterialTheme.typography.bodySmall)
+                                        Text("Context Length: ${meta.optInt("context_length", 2048)}", style = MaterialTheme.typography.bodySmall)
+                                        Text("Embedding Dim: ${meta.optInt("embedding_length", 0)}", style = MaterialTheme.typography.bodySmall)
+                                        Text("Layers: ${meta.optInt("block_count", 0)}", style = MaterialTheme.typography.bodySmall)
+                                        Text("Heads (Attn/KV): ${meta.optInt("head_count", 0)} / ${meta.optInt("head_count_kv", 0)}", style = MaterialTheme.typography.bodySmall)
+                                        Text("Vocab Size: ${meta.optInt("vocab_size", 0)}", style = MaterialTheme.typography.bodySmall)
+                                        Text("Tensors Count: ${meta.optInt("tensor_count", 0)}", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showStreamVexDialog = false }) {
+                                Text("Close")
+                            }
+                        }
+                    )
+                }
+
+                if (model.status == ModelStatus.Available && (model.localPath != null || model.bundle != null) && isGgufForDiag) {
+                    LiquidGlassButton(
+                        enabled = !isCheckingStreamVex,
+                        onClick = {
+                            showStreamVexDialog = true
+                            isCheckingStreamVex = true
+                            diagScope.launch(Dispatchers.IO) {
+                                val p = model.localPath ?: model.bundle?.basePath ?: ""
+                                val res = StreamVexModelManager.validateModelFile(p)
+                                val meta = StreamVexModelManager.inspectGguf(p)
+                                withContext(Dispatchers.Main) {
+                                    streamVexValidationResult = res
+                                    streamVexGgufMeta = meta
+                                    isCheckingStreamVex = false
+                                }
+                            }
+                        },
+                        hazeState = hazeState,
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                    ) {
+                        Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("StreamVex")
                     }
                 }
 

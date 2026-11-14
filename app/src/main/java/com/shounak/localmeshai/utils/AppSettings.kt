@@ -19,6 +19,7 @@ data class AppSettingsData(
     val autoUnloadMinutes: Int = 5,
     val huggingFaceToken: String = "",
     val autoCheckUpdates: Boolean = true,
+    val preferredInferenceEngine: String = "STREAMVEX",
     val llamaBackendPreference: String = "AUTO",
     val enableToolCalling: Boolean = false,
     val warmupAfterLoading: Boolean = true,
@@ -58,6 +59,7 @@ class AppSettings internal constructor(
             autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 5),
             huggingFaceToken = tokenStore.read(),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
+            preferredInferenceEngine = prefs.getString(KEY_PREFERRED_INFERENCE_ENGINE, "STREAMVEX") ?: "STREAMVEX",
             llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
                 if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
             } ?: "AUTO",
@@ -96,6 +98,7 @@ class AppSettings internal constructor(
             .putBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, updated.enableAutoHideBottomBar)
             .putInt(KEY_AUTO_UNLOAD_MINS, updated.autoUnloadMinutes)
             .putBoolean(KEY_AUTO_CHECK_UPDATES, updated.autoCheckUpdates)
+            .putString(KEY_PREFERRED_INFERENCE_ENGINE, updated.preferredInferenceEngine)
             .putString(KEY_LLAMA_BACKEND_PREF, updated.llamaBackendPreference)
             .putBoolean(KEY_ENABLE_TOOL_CALLING, updated.enableToolCalling)
             .putBoolean("warmup_after_loading", updated.warmupAfterLoading)
@@ -133,6 +136,7 @@ class AppSettings internal constructor(
         private const val KEY_AUTO_HIDE_BOTTOM_BAR = "auto_hide_bottom_bar"
         internal const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
         private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
+        private const val KEY_PREFERRED_INFERENCE_ENGINE = "preferred_inference_engine"
         private const val KEY_LLAMA_BACKEND_PREF = "llama_backend_pref"
         private const val KEY_ENABLE_TOOL_CALLING = "enable_tool_calling"
         private const val KEY_TOOL_SKILLS = "enabled_tool_skills"

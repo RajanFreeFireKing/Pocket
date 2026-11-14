@@ -125,6 +125,7 @@ class ChatInferenceManager(context: Context) {
         RuntimeKind.LiteRtLm -> liteRtConversation != null
         RuntimeKind.MediaPipe -> mediaPipeInference != null
         RuntimeKind.Portable -> portableTextEngine != null
+        RuntimeKind.StreamVex -> com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().isReady
         RuntimeKind.None -> false
     }
     val usesStructuredHistory: Boolean get() = runtime == RuntimeKind.LlamaCpp || runtime == RuntimeKind.Portable
@@ -335,6 +336,41 @@ class ChatInferenceManager(context: Context) {
 
             var selectedBackend = decision.selectedBackend
             var fallbackReason: String? = if (decision.isAuto && selectedBackend == LlamaBackend.CPU) decision.reason else null
+
+            val enginePref = appSettings.settings.value.preferredInferenceEngine.uppercase()
+            if ((enginePref == "STREAMVEX" || enginePref == "AUTO") &&
+                com.shounak.localmeshai.core.streamvex.native.StreamVexNativeBridge.isLibraryLoaded &&
+                file != null
+            ) {
+                onModelProgress?.invoke(
+                    ModelLoadStage.ContextPreparation("StreamVex Core"),
+                    null,
+                    null
+                )
+                val streamVex = com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance()
+                val initRes = streamVex.initialize(
+                    file.absolutePath,
+                    com.shounak.localmeshai.core.streamvex.api.StreamVexConfig(
+                        threads = dynamicThreads,
+                        contextLength = dynamicContext
+                    )
+                )
+                if (initRes.isSuccess) {
+                    runtime = RuntimeKind.StreamVex
+                    activeBackendDisplayName = "StreamVex Core Engine (ARM64 NEON)"
+                    _isGgufActive.value = true
+                    currentGgufModelPath = file.absolutePath
+                    currentGgufThreads = dynamicThreads
+                    currentGgufContext = dynamicContext
+                    runtimeContextCapacity.initialize(dynamicContext) { Unit }
+                    activeModelLease = modelLease ?: ModelArtifactStorage.leaseArtifact(file)
+                    Log.i(TAG, "StreamVex Core Engine successfully initialized for ${file.name}")
+                    return
+                } else {
+                    Log.w(TAG, "StreamVex init failed: ${initRes.exceptionOrNull()?.message}, falling back to reference engine")
+                }
+            }
+
             var engine = LlamaCppEngine(context)
 
             try {
@@ -905,6 +941,15 @@ class ChatInferenceManager(context: Context) {
                     onUpdate = effectiveOnUpdate,
                     onAttemptChanged = { attempt = it; lastNonLlamaTokenCount = null; timing?.beginAttempt() }
                 )
+                RuntimeKind.StreamVex -> streamStreamVex(
+                    prompt = inferencePrompt,
+                    timing = timing,
+                    onProgress = reportProgress,
+                    onMetrics = { m -> lastLlamaMetrics = m },
+                    publisher = publisher,
+                    responseController = responseController,
+                    onUpdate = effectiveOnUpdate
+                )
                 RuntimeKind.None -> throw IllegalStateException("Inference not initialized")
             } }
             responseController.finish()
@@ -1253,6 +1298,56 @@ class ChatInferenceManager(context: Context) {
         }
     }
 
+    private suspend fun streamStreamVex(
+        prompt: String,
+        timing: InferenceTiming?,
+        onProgress: ((RequestProgress) -> Unit)?,
+        onMetrics: ((LlamaGenerationMetrics) -> Unit)?,
+        publisher: StreamingResponsePublisher?,
+        responseController: InferenceResponseController?,
+        onUpdate: (String) -> Unit
+    ) {
+        timing?.recordPrefillStart()
+        var isFirstToken = true
+        var tokenCount = 0
+        val startMs = System.currentTimeMillis()
+        var firstTokenMs = 0L
+
+        onProgress?.invoke(RequestProgress(phase = "generating", progress = 0.0f))
+
+        com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().generate(prompt).collect { token ->
+            if (token.errorMessage != null && token.errorMessage != "Cancelled") {
+                throw RuntimeException(token.errorMessage)
+            }
+            if (token.text.isNotEmpty()) {
+                if (isFirstToken) {
+                    isFirstToken = false
+                    firstTokenMs = System.currentTimeMillis() - startMs
+                    timing?.recordFirstToken()
+                }
+                tokenCount++
+                publisher?.publish(token.text)
+                responseController?.append(token.text)
+                if (publisher != null) {
+                    onUpdate(publisher.rawText)
+                }
+            }
+        }
+
+        val totalDurationMs = System.currentTimeMillis() - startMs
+        val decodeDurationMs = if (firstTokenMs > 0) totalDurationMs - firstTokenMs else totalDurationMs
+        onMetrics?.invoke(
+            LlamaGenerationMetrics(
+                prefillDurationMs = firstTokenMs,
+                decodeDurationMs = decodeDurationMs,
+                tokenCount = tokenCount,
+                promptTokens = prompt.length / 4,
+                reusedPromptTokens = 0,
+                evaluatedPromptTokens = prompt.length / 4
+            )
+        )
+    }
+
     private suspend fun streamLlamaCpp(
         prompt: String,
         rawUserText: String = "",
@@ -1520,6 +1615,9 @@ class ChatInferenceManager(context: Context) {
         }
         activeLiteRtAdapter?.cancel(liteRtConversation)
         runCatching { liteRtConversation?.cancelProcess() }
+        if (runtime == RuntimeKind.StreamVex) {
+            runCatching { com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().cancelGeneration() }
+        }
         val session = activeMediaPipeSession
         if (session != null) {
             runCatching { session.cancelGenerateResponseAsync() }
@@ -1652,6 +1750,15 @@ class ChatInferenceManager(context: Context) {
                 if (closeError == null) closeError = t
             }
         }
+        if (runtime == RuntimeKind.StreamVex) {
+            try {
+                kotlinx.coroutines.runBlocking {
+                    com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().shutdown()
+                }
+            } catch (t: Throwable) {
+                if (closeError == null) closeError = t
+            }
+        }
         currentGgufBundle = null
 
         if (mediaPipeInference != null) {
@@ -1728,13 +1835,15 @@ class ChatInferenceManager(context: Context) {
     }
 
     fun isLlamaCppRuntime(): Boolean = runtime == RuntimeKind.LlamaCpp
+    fun isStreamVexRuntime(): Boolean = runtime == RuntimeKind.StreamVex
 
     private enum class RuntimeKind {
         None,
         MediaPipe,
         LiteRtLm,
         Portable,
-        LlamaCpp
+        LlamaCpp,
+        StreamVex
     }
 
     private enum class LiteRtConversationMode {

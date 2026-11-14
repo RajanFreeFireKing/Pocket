@@ -214,3 +214,51 @@ if(SOLUS_BUILD_TEST_RUNNER)
         ${vulkan-lib}
     )
 endif()
+
+# ============================================================================
+# StreamVex Universal Mobile AI Runtime Target
+# ============================================================================
+set(STREAMVEX_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/streamvex")
+if (EXISTS "${STREAMVEX_SRC_DIR}/src/streamvex.cpp")
+    add_library(
+        streamvex
+        SHARED
+        streamvex/src/streamvex.cpp
+        streamvex/src/jni_bridge.cpp
+        streamvex/src/io/layer_streamer.cpp
+        streamvex/src/parser/gguf_reader.cpp
+        streamvex/src/compute/dequant.cpp
+        streamvex/src/compute/gemv.cpp
+        streamvex/src/compute/transformer_layer.cpp
+        streamvex/src/compute/sampler.cpp
+        streamvex/src/engine/autoregressive_engine.cpp
+        streamvex/src/resource/resource_intelligence.cpp
+        streamvex/src/memory/hierarchical_memory.cpp
+        streamvex/src/scheduler/compute_scheduler.cpp
+        streamvex/src/dual_model/voice_engine.cpp
+        streamvex/src/dual_model/dual_model_runtime.cpp
+        streamvex/src/device/device_profile.cpp
+    )
+
+    target_include_directories(
+        streamvex
+        PUBLIC
+        streamvex/include
+        PRIVATE
+        streamvex/src
+        llama.cpp/include
+        llama.cpp/src
+        llama.cpp/ggml/include
+        llama.cpp/ggml/src
+        llama.cpp/common
+    )
+
+    target_link_libraries(
+        streamvex
+        PRIVATE
+        llama
+        ggml
+        ${log-lib}
+        ${android-lib}
+    )
+endif()

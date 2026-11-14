@@ -98,10 +98,18 @@ fun SettingsDialog(
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
     var showToolSkills by remember { mutableStateOf(false) }
+    var showStreamVexEngine by remember { mutableStateOf(false) }
     val speedScope = rememberCoroutineScope()
     var tuningSpeed by remember { mutableStateOf(false) }
     var speedStatus by remember { mutableStateOf<String?>(null) }
     if (showToolSkills) ToolSkillsDialog(hazeState = hazeState, onDismiss = { showToolSkills = false })
+    if (showStreamVexEngine) {
+        StreamVexEngineDialog(
+            hazeState = hazeState,
+            initialModelPath = mainViewModel.selectedTextModelPath.collectAsState().value,
+            onDismissRequest = { showStreamVexEngine = false }
+        )
+    }
 
     val scrollState = rememberScrollState()
     var scrollContainerCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -422,6 +430,85 @@ fun SettingsDialog(
                                 )
                             }
                         }
+
+                        // StreamVex Core Engine Integration Card
+                        GlassDispersionCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            hazeState = hazeState,
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Memory, contentDescription = null, tint = colors.primary, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("StreamVex Core Engine", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color(0xFF10B981).copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = "v2.0 Universal",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF10B981)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Adaptive mobile runtime with zero synthetic weights, ARM64 NEON acceleration, bounded layer streaming, and empirical benchmarking.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant.copy(alpha = 0.72f)
+                                )
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    listOf(
+                                        "STREAMVEX" to "StreamVex Core (Recommended)",
+                                        "LLAMA_CPP" to "Llama.cpp Backend",
+                                        "AUTO" to "Auto Engine"
+                                    ).forEach { (engineCode, label) ->
+                                        val isSelected = settingsData.preferredInferenceEngine.equals(engineCode, ignoreCase = true)
+                                        FilterChip(
+                                            selected = isSelected,
+                                            onClick = {
+                                                appSettings.updateSettings { it.copy(preferredInferenceEngine = engineCode) }
+                                            },
+                                            label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                LiquidGlassButton(
+                                    hazeState = hazeState,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = { showStreamVexEngine = true }
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Open Engine Manager & Benchmarks")
+                                    }
+                                }
+                            }
+                        }
+
                         val selectedVisionPath by mainViewModel.selectedVisionModelPath.collectAsState()
                         val tuningPath = selectedTextPath ?: selectedVisionPath
                         val tuningModel = mainViewModel.availableModels.firstOrNull { it.localPath == tuningPath || it.id == tuningPath }
