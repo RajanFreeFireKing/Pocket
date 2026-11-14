@@ -1307,7 +1307,7 @@ class ChatInferenceManager(context: Context) {
         responseController: InferenceResponseController?,
         onUpdate: (String) -> Unit
     ): String {
-        timing?.recordPrefillStart()
+        timing?.startInference()
         var isFirstToken = true
         var tokenCount = 0
         val startMs = System.currentTimeMillis()
@@ -1320,6 +1320,7 @@ class ChatInferenceManager(context: Context) {
                 throw RuntimeException(token.errorMessage)
             }
             if (token.text.isNotEmpty()) {
+                timing?.recordChunk(token.text)
                 if (isFirstToken) {
                     isFirstToken = false
                     firstTokenMs = System.currentTimeMillis() - startMs
