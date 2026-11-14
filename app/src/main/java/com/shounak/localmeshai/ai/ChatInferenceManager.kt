@@ -1327,11 +1327,10 @@ class ChatInferenceManager(context: Context) {
                     timing?.recordFirstToken()
                 }
                 tokenCount++
-                publisher?.publish(token.text)
+                publisher?.appendDelta(token.text)
                 responseController?.append(token.text)
-                if (publisher != null) {
-                    onUpdate(publisher.rawText)
-                }
+                publisher?.notifyStructuredUpdate()
+                onUpdate(token.text)
             }
         }
 
@@ -1347,7 +1346,7 @@ class ChatInferenceManager(context: Context) {
                 evaluatedPromptTokens = prompt.length / 4
             )
         )
-        return publisher?.rawText.orEmpty()
+        return publisher?.rawText() ?: responseController?.getFinalAnswer().orEmpty()
     }
 
     private suspend fun streamLlamaCpp(
