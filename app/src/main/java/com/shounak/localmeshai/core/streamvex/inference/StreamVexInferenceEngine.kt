@@ -38,14 +38,22 @@ class StreamVexInferenceEngine {
         var firstTokenReceived = false
 
         try {
-            val returnCode = StreamVexNativeBridge.streamToken(prompt) { tokenPiece ->
-                if (!firstTokenReceived) {
-                    firstTokenReceived = true
-                    trySend(StreamVexToken(text = tokenPiece, isFirstToken = true))
-                } else {
-                    trySend(StreamVexToken(text = tokenPiece))
+            val callback = object : com.shounak.localmeshai.core.streamvex.native.StreamVexTokenCallback {
+                override fun onToken(token: String) {
+                    if (!firstTokenReceived) {
+                        firstTokenReceived = true
+                        trySend(StreamVexToken(text = token, isFirstToken = true))
+                    } else {
+                        trySend(StreamVexToken(text = token))
+                    }
+                }
+
+                override fun onTokenReceived(token: String) {
+                    onToken(token)
                 }
             }
+            StreamVexNativeBridge.activeTokenCallback = callback
+            val returnCode = StreamVexNativeBridge.streamToken(prompt, callback)
 
             if (returnCode == 0) {
                 StreamVexDiagnostics.log("Inference", "Generation completed successfully")
@@ -63,6 +71,7 @@ class StreamVexInferenceEngine {
             StreamVexDiagnostics.log("Inference", "Generation threw exception: ${t.message}")
             trySend(StreamVexToken(text = "", isComplete = true, errorMessage = t.message))
         } finally {
+            StreamVexNativeBridge.activeTokenCallback = null
             isGenerating.set(false)
             close()
         }

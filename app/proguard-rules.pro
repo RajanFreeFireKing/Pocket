@@ -64,3 +64,29 @@
 # ORT's native library resolves Java classes and members by their original names.
 # https://onnxruntime.ai/docs/build/android.html
 -keep class ai.onnxruntime.** { *; }
+
+# --------------------------------------------------------------------
+# Solus StreamVex Universal Mobile AI Engine JNI bindings & callbacks
+# --------------------------------------------------------------------
+-keep class com.shounak.localmeshai.core.streamvex.** { *; }
+-keep interface com.shounak.localmeshai.core.streamvex.native.StreamVexTokenCallback { *; }
+-keepclassmembers class * implements com.shounak.localmeshai.core.streamvex.native.StreamVexTokenCallback {
+    public void onToken(java.lang.String);
+    public void onTokenReceived(java.lang.String);
+    *;
+}
+-keep class com.shounak.localmeshai.core.streamvex.native.StreamVexNativeBridge { *; }
+-keepclassmembers class com.shounak.localmeshai.core.streamvex.native.StreamVexNativeBridge {
+    public static void onToken(java.lang.String);
+    public static void onTokenReceived(java.lang.String);
+    public static com.shounak.localmeshai.core.streamvex.native.StreamVexTokenCallback activeTokenCallback;
+    native <methods>;
+    *;
+}
+-keep class com.vexdesk.client.NativeBridge { *; }
+-keepclassmembers class com.vexdesk.client.NativeBridge {
+    public void onTokenReceived(java.lang.String);
+    public void onToken(java.lang.String);
+    native <methods>;
+    *;
+}

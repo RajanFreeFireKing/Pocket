@@ -32,11 +32,22 @@ object StreamVexBenchmarkRunner {
         val genStart = System.currentTimeMillis()
         var tokenCount = 0
 
-        StreamVexNativeBridge.streamToken(testPrompt) { token ->
-            if (tokenCount == 0) {
-                firstTokenMs = (System.currentTimeMillis() - genStart).toDouble()
+        val benchCallback = object : com.shounak.localmeshai.core.streamvex.native.StreamVexTokenCallback {
+            override fun onToken(token: String) {
+                if (tokenCount == 0) {
+                    firstTokenMs = (System.currentTimeMillis() - genStart).toDouble()
+                }
+                tokenCount++
             }
-            tokenCount++
+            override fun onTokenReceived(token: String) {
+                onToken(token)
+            }
+        }
+        StreamVexNativeBridge.activeTokenCallback = benchCallback
+        try {
+            StreamVexNativeBridge.streamToken(testPrompt, benchCallback)
+        } finally {
+            StreamVexNativeBridge.activeTokenCallback = null
         }
         val genDurationSec = (System.currentTimeMillis() - genStart) / 1000.0
 

@@ -49,43 +49,76 @@ private:
 
 /**
  * Thread-safe callback dispatcher for streaming tokens back to Java/Kotlin.
+ * Supports both direct callback instance invocation and StreamVexNativeBridge static fallback.
  */
 class JniStreamingDispatcher {
 public:
-    JniStreamingDispatcher(JNIEnv* env, jobject thiz, jmethodID mid)
-        : m_mid(mid) {
-        m_global_thiz = env->NewGlobalRef(thiz);
+    JniStreamingDispatcher(
+        JNIEnv* env,
+        jobject callback,
+        jmethodID callbackMid,
+        jclass bridgeClass = nullptr,
+        jmethodID bridgeStaticMid = nullptr
+    ) : m_callback_mid(callbackMid), m_bridge_static_mid(bridgeStaticMid) {
+        if (callback && env) {
+            m_global_callback = env->NewGlobalRef(callback);
+        }
+        if (bridgeClass && env) {
+            m_global_bridge_class = static_cast<jclass>(env->NewGlobalRef(bridgeClass));
+        }
     }
 
     ~JniStreamingDispatcher() {
-        if (m_global_thiz) {
-            JniThreadAttachment guard;
-            if (guard.is_valid()) {
-                guard.env()->DeleteGlobalRef(m_global_thiz);
+        JniThreadAttachment guard;
+        if (guard.is_valid()) {
+            JNIEnv* env = guard.env();
+            if (m_global_callback) {
+                env->DeleteGlobalRef(m_global_callback);
+                m_global_callback = nullptr;
             }
-            m_global_thiz = nullptr;
+            if (m_global_bridge_class) {
+                env->DeleteGlobalRef(m_global_bridge_class);
+                m_global_bridge_class = nullptr;
+            }
         }
     }
 
     void emit_token(const char* token) {
-        if (!token || !m_global_thiz || !m_mid) return;
+        if (!token) return;
         JniThreadAttachment guard;
         if (!guard.is_valid()) return;
 
         JNIEnv* env = guard.env();
         jstring jtok = env->NewStringUTF(token);
-        if (jtok) {
-            env->CallVoidMethod(m_global_thiz, m_mid, jtok);
-            env->DeleteLocalRef(jtok);
+        if (!jtok) return;
+
+        bool delivered = false;
+        // 1. Direct instance callback invocation
+        if (m_global_callback && m_callback_mid) {
+            env->CallVoidMethod(m_global_callback, m_callback_mid, jtok);
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            } else {
+                delivered = true;
+            }
+        }
+
+        // 2. Fallback to StreamVexNativeBridge static callback if instance dispatch was not delivered
+        if (!delivered && m_global_bridge_class && m_bridge_static_mid) {
+            env->CallStaticVoidMethod(m_global_bridge_class, m_bridge_static_mid, jtok);
             if (env->ExceptionCheck()) {
                 env->ExceptionClear();
             }
         }
+
+        env->DeleteLocalRef(jtok);
     }
 
 private:
-    jobject m_global_thiz = nullptr;
-    jmethodID m_mid = nullptr;
+    jobject m_global_callback = nullptr;
+    jmethodID m_callback_mid = nullptr;
+    jclass m_global_bridge_class = nullptr;
+    jmethodID m_bridge_static_mid = nullptr;
 };
 
 static thread_local std::shared_ptr<JniStreamingDispatcher> tls_dispatcher;
@@ -94,6 +127,51 @@ static void active_jni_token_callback(const char* token) {
     if (tls_dispatcher) {
         tls_dispatcher->emit_token(token);
     }
+}
+
+static jmethodID find_token_callback_method(JNIEnv* env, jobject target) {
+    if (!env || !target) return nullptr;
+
+    jclass targetClass = env->GetObjectClass(target);
+    if (!targetClass) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    }
+
+    // 1. Try "onToken" on target object class
+    jmethodID mid = env->GetMethodID(targetClass, "onToken", "(Ljava/lang/String;)V");
+    if (mid) {
+        env->DeleteLocalRef(targetClass);
+        return mid;
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    // 2. Try "onTokenReceived" on target object class
+    mid = env->GetMethodID(targetClass, "onTokenReceived", "(Ljava/lang/String;)V");
+    if (mid) {
+        env->DeleteLocalRef(targetClass);
+        return mid;
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    // 3. Try "onToken" on StreamVexTokenCallback interface class
+    jclass ifaceClass = env->FindClass("com/shounak/localmeshai/core/streamvex/native/StreamVexTokenCallback");
+    if (ifaceClass) {
+        mid = env->GetMethodID(ifaceClass, "onToken", "(Ljava/lang/String;)V");
+        if (!mid) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            mid = env->GetMethodID(ifaceClass, "onTokenReceived", "(Ljava/lang/String;)V");
+        }
+        env->DeleteLocalRef(ifaceClass);
+        if (mid) {
+            env->DeleteLocalRef(targetClass);
+            return mid;
+        }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    env->DeleteLocalRef(targetClass);
+    return nullptr;
 }
 
 } // anonymous namespace
@@ -140,10 +218,21 @@ JNIEXPORT jint JNICALL Java_com_vexdesk_client_NativeBridge_nativeInitEngine(
 
 JNIEXPORT jint JNICALL Java_com_vexdesk_client_NativeBridge_streamPrompt(
     JNIEnv* env, jobject thiz, jstring prompt) {
-    if (!prompt) return -1;
+    if (!prompt || !thiz) return -1;
 
-    jclass clazz = env->GetObjectClass(thiz);
-    jmethodID mid = env->GetMethodID(clazz, "onTokenReceived", "(Ljava/lang/String;)V");
+    jmethodID mid = find_token_callback_method(env, thiz);
+    if (!mid) {
+        jclass clazz = env->GetObjectClass(thiz);
+        if (clazz) {
+            mid = env->GetMethodID(clazz, "onTokenReceived", "(Ljava/lang/String;)V");
+            if (!mid) {
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                mid = env->GetMethodID(clazz, "onToken", "(Ljava/lang/String;)V");
+            }
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            env->DeleteLocalRef(clazz);
+        }
+    }
     if (!mid) return -2;
 
     tls_dispatcher = std::make_shared<JniStreamingDispatcher>(env, thiz, mid);
@@ -344,17 +433,38 @@ JNIEXPORT jint JNICALL Java_com_shounak_localmeshai_core_streamvex_native_Stream
 JNIEXPORT jint JNICALL Java_com_shounak_localmeshai_core_streamvex_native_StreamVexNativeBridge_streamToken(
     JNIEnv* env, jobject thiz, jstring prompt, jobject callback) {
     (void)thiz;
-    if (!prompt || !callback) return -1;
+    if (!prompt) return -1;
 
-    jclass callbackClass = env->GetObjectClass(callback);
-    jmethodID mid = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V");
-    if (!mid) {
-        env->ExceptionClear();
-        mid = env->GetMethodID(callbackClass, "onTokenReceived", "(Ljava/lang/String;)V");
+    jmethodID callbackMid = nullptr;
+    if (callback) {
+        callbackMid = find_token_callback_method(env, callback);
     }
-    if (!mid) return -2;
 
-    tls_dispatcher = std::make_shared<JniStreamingDispatcher>(env, callback, mid);
+    // Always locate StreamVexNativeBridge class & static fallback
+    jclass bridgeClass = env->FindClass("com/shounak/localmeshai/core/streamvex/native/StreamVexNativeBridge");
+    jmethodID bridgeStaticMid = nullptr;
+    if (bridgeClass) {
+        bridgeStaticMid = env->GetStaticMethodID(bridgeClass, "onToken", "(Ljava/lang/String;)V");
+        if (!bridgeStaticMid) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            bridgeStaticMid = env->GetStaticMethodID(bridgeClass, "onTokenReceived", "(Ljava/lang/String;)V");
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+
+    // We must have at least one valid method (instance or bridge static)
+    if (!callbackMid && !bridgeStaticMid) {
+        if (bridgeClass) env->DeleteLocalRef(bridgeClass);
+        return -2;
+    }
+
+    tls_dispatcher = std::make_shared<JniStreamingDispatcher>(
+        env, callback, callbackMid, bridgeClass, bridgeStaticMid
+    );
+
+    if (bridgeClass) {
+        env->DeleteLocalRef(bridgeClass);
+    }
 
     const char* c_prompt = env->GetStringUTFChars(prompt, nullptr);
     int res = -1;

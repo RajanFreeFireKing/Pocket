@@ -1316,6 +1316,10 @@ class ChatInferenceManager(context: Context) {
         onProgress?.invoke(RequestProgress.Generating)
 
         com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().generate(prompt).collect { token ->
+            if (stopRequested) {
+                com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().cancelGeneration()
+                throw CancellationException("Generation stopped by user")
+            }
             if (token.errorMessage != null && token.errorMessage != "Cancelled") {
                 throw RuntimeException(token.errorMessage)
             }
