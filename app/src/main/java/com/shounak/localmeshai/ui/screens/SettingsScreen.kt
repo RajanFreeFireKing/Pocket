@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
+import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.glassEffect
 import kotlinx.coroutines.launch
