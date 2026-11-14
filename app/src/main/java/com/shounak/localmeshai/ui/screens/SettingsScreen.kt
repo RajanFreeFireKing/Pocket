@@ -434,9 +434,9 @@ fun SettingsDialog(
 
                         // StreamVex Core Engine Integration Card
                         GlassDispersionCard(
-                            modifier = Modifier.fillMaxWidth(),
                             hazeState = hazeState,
-                            shape = RoundedCornerShape(16.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 16.dp
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
                                 Row(
