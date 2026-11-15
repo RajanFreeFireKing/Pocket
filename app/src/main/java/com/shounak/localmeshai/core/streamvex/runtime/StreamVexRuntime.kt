@@ -113,6 +113,13 @@ class StreamVexRuntime private constructor() : StreamVexApi {
         inferenceEngine.abort()
     }
 
+    fun resetContext() {
+        if (StreamVexNativeBridge.isLibraryLoaded) {
+            StreamVexDiagnostics.log("Runtime", "Resetting KV cache context")
+            StreamVexNativeBridge.resetContext()
+        }
+    }
+
     override suspend fun shutdown() = lifecycleMutex.withLock {
         withContext(Dispatchers.IO) {
             StreamVexDiagnostics.log("Runtime", "Shutting down engine")

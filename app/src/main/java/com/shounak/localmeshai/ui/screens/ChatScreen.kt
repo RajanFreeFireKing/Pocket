@@ -831,8 +831,7 @@ fun ChatScreen(
                     supportsThinkingMode = selectedSupportsThinking,
                     allowUnsafeOverride = selectedUnsafeOverride,
                     bundle = selectedModel?.bundle,
-                    deferLoad = com.shounak.localmeshai.ui.models.ChatModelHandoff.defersLoad(path,
-                        com.shounak.localmeshai.utils.ModelRuntimeCoordinator.getActiveModelPath(com.shounak.localmeshai.utils.ModelRuntimeOwner.Vision))
+                    deferLoad = false
                 )
             }
         }

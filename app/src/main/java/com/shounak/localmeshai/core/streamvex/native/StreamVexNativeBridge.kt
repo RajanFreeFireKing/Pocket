@@ -64,6 +64,7 @@ object StreamVexNativeBridge {
     @Keep external fun isEngineReady(): Boolean
     @Keep external fun releaseEngine()
     @Keep external fun abortGeneration()
+    @Keep external fun resetContext()
     @Keep external fun onTrimMemory(trimLevel: Int)
     @Keep external fun setBackgroundMode(isBackground: Boolean)
     @Keep external fun setPriority(priorityLevel: Int): Int

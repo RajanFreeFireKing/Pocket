@@ -71,6 +71,11 @@ STREAMVEX_API int is_engine_ready(void);
 STREAMVEX_API void release_engine(void);
 
 /**
+ * Clears KV cache and resets conversation context without unloading weights.
+ */
+STREAMVEX_API void reset_context(void);
+
+/**
  * Retrieves the latest generation telemetry summary (TTFT, tokens/sec, peak RAM) in JSON format.
  * 
  * @param out_json Buffer to receive JSON string.

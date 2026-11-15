@@ -288,8 +288,8 @@ AdaptiveBudget ResourceIntelligence::compute_budget(double requested_model_size_
     // Voice model memory reservation (VAD + STT/TTS scratch)
     b.voice_model_memory_budget_mb = std::min(80.0, safe_usable * 0.10);
 
-    // Prefetch layer buffer size: 32MB on low ram, 64MB default, 128MB on high ram
-    if (m_mem_info.total_ram_mb > 7000.0) {
+    // Prefetch layer buffer size: 32MB on low ram, 64MB default, 128MB on high ram (8GB+ like OPPO CPH2665)
+    if (m_mem_info.total_ram_mb >= 6000.0) {
         b.layer_prefetch_buffer_size_bytes = 128 * 1024 * 1024;
     } else if (m_mem_info.total_ram_mb < 3500.0) {
         b.layer_prefetch_buffer_size_bytes = 32 * 1024 * 1024;
@@ -297,19 +297,24 @@ AdaptiveBudget ResourceIntelligence::compute_budget(double requested_model_size_
         b.layer_prefetch_buffer_size_bytes = 64 * 1024 * 1024;
     }
 
-    // Thread scheduling recommendations
+    // Thread scheduling recommendations tailored for 8-core architectures (e.g. OPPO CPH2665: 2x Big + 6x Little)
     int total_online = m_cpu_info.online_cores > 0 ? m_cpu_info.online_cores : 4;
     int big_cores = m_cpu_info.big_cores > 0 ? m_cpu_info.big_cores : (total_online / 2);
 
     if (is_foreground) {
-        // Foreground interactive: utilize big cores + up to 2 little cores, capped to total - 1
-        b.recommended_threads = std::max(2, std::min(total_online - 1, big_cores + 1));
+        if (total_online >= 8) {
+            // OPPO CPH2665: 2x Cortex-A78 @ 2.6GHz + 6x Cortex-A55 @ 2.0GHz
+            // 4-6 threads saturates memory bandwidth while avoiding thermal throttling
+            b.recommended_threads = (m_thermal_info.status == ThermalStatus::WARM) ? 4 : 6;
+        } else {
+            b.recommended_threads = std::max(2, std::min(total_online - 1, big_cores + 1));
+        }
         b.background_priority = 1;
         b.should_throttle = false;
         b.throttle_factor = 1.0f;
     } else {
         // Background AI workload: conservative, don't hog phone
-        b.recommended_threads = std::max(1, std::min(2, total_online / 2));
+        b.recommended_threads = std::max(1, std::min(2, total_online / 4));
         b.background_priority = 3;
         b.should_throttle = true;
         b.throttle_factor = 0.65f;

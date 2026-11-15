@@ -122,6 +122,11 @@ public:
     void release();
 
     /**
+     * Resets KV cache memory and cached prefix sequence without unloading model weights.
+     */
+    void reset_context();
+
+    /**
      * Retrieves the latest generation telemetry.
      */
     GenerationTelemetry get_telemetry() const;
@@ -146,6 +151,8 @@ private:
     llama_context* m_ctx = nullptr;
     std::unique_ptr<GgufReader> m_gguf_reader;
     std::unique_ptr<LayerStreamer> m_streamer;
+
+    std::vector<llama_token> m_cached_tokens;
 
     GenerationTelemetry m_telemetry;
     int m_n_ctx = 2048;

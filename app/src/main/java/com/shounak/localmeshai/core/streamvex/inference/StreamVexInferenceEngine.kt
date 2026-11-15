@@ -40,11 +40,13 @@ class StreamVexInferenceEngine {
         try {
             val callback = object : com.shounak.localmeshai.core.streamvex.native.StreamVexTokenCallback {
                 override fun onToken(token: String) {
+                    val cleanTok = com.shounak.localmeshai.utils.ModelOutputSanitizer.clean(token)
+                    if (cleanTok.isEmpty()) return
                     if (!firstTokenReceived) {
                         firstTokenReceived = true
-                        trySend(StreamVexToken(text = token, isFirstToken = true))
+                        trySend(StreamVexToken(text = cleanTok, isFirstToken = true))
                     } else {
-                        trySend(StreamVexToken(text = token))
+                        trySend(StreamVexToken(text = cleanTok))
                     }
                 }
 
@@ -58,6 +60,9 @@ class StreamVexInferenceEngine {
             if (returnCode == 0) {
                 StreamVexDiagnostics.log("Inference", "Generation completed successfully")
                 trySend(StreamVexToken(text = "", isComplete = true))
+            } else if (returnCode == 1 || returnCode == -10) {
+                StreamVexDiagnostics.log("Inference", "Generation stopped or cancelled: code $returnCode")
+                trySend(StreamVexToken(text = "", isComplete = true, errorMessage = "Cancelled"))
             } else {
                 StreamVexDiagnostics.log("Inference", "Generation returned non-zero code: $returnCode")
                 trySend(StreamVexToken(text = "", isComplete = true, errorMessage = "Inference stopped with code $returnCode"))

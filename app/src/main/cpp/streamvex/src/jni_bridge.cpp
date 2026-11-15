@@ -498,6 +498,13 @@ JNIEXPORT void JNICALL Java_com_shounak_localmeshai_core_streamvex_native_Stream
     Java_com_vexdesk_client_NativeBridge_nativeAbortGeneration(env, thiz);
 }
 
+JNIEXPORT void JNICALL Java_com_shounak_localmeshai_core_streamvex_native_StreamVexNativeBridge_resetContext(
+    JNIEnv* env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    reset_context();
+}
+
 JNIEXPORT void JNICALL Java_com_shounak_localmeshai_core_streamvex_native_StreamVexNativeBridge_onTrimMemory(
     JNIEnv* env, jobject thiz, jint trimLevel) {
     Java_com_vexdesk_client_NativeBridge_nativeOnTrimMemory(env, thiz, trimLevel);

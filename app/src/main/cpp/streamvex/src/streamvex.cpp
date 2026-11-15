@@ -91,6 +91,12 @@ STREAMVEX_API void release_engine(void) {
     std::cout << "[StreamVex] Engine unloaded and resources released.\n";
 }
 
+STREAMVEX_API void reset_context(void) {
+    std::lock_guard<std::mutex> lock(g_api_mtx);
+    g_engine.reset_context();
+    std::cout << "[StreamVex] KV cache and context reset.\n";
+}
+
 STREAMVEX_API int get_last_generation_telemetry(char* out_json, size_t max_len) {
     if (!out_json || max_len == 0) return -1;
 

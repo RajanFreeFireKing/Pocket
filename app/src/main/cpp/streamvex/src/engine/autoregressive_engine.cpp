@@ -136,18 +136,83 @@ int AutoregressiveEngine::generate_stream(
     m_abort_requested.store(false);
     auto t_start = std::chrono::high_resolution_clock::now();
 
-    // Format chat prompt if raw
-    std::string formatted_prompt;
-    if (prompt.find("<|im_start|>") == std::string::npos && prompt.find("[INST]") == std::string::npos) {
-        formatted_prompt = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n";
-    } else {
-        formatted_prompt = prompt;
-    }
-
     const struct llama_vocab * vocab = llama_model_get_vocab(m_model);
     if (!vocab) {
         callback("[StreamVex Error]: Failed to get model vocabulary.");
         return -4;
+    }
+
+    // Dynamic Chat Template Detection: Llama 3.2 Instruct, ChatML, Gemma
+    bool is_already_templated = (prompt.find("<|start_header_id|>") != std::string::npos) ||
+                                (prompt.find("<|im_start|>") != std::string::npos) ||
+                                (prompt.find("<start_of_turn>") != std::string::npos) ||
+                                (prompt.find("[INST]") != std::string::npos);
+
+    std::string formatted_prompt;
+    if (is_already_templated) {
+        formatted_prompt = prompt;
+    } else {
+        const char* model_chat_tmpl = llama_model_chat_template(m_model, nullptr);
+        std::string tmpl_str = model_chat_tmpl ? std::string(model_chat_tmpl) : "";
+
+        // Check if vocabulary has Llama 3 tokens
+        llama_token llama3_hdr = -1;
+        int n_l3 = llama_tokenize(vocab, "<|start_header_id|>", 19, &llama3_hdr, 1, false, true);
+        bool has_llama3 = (n_l3 == 1 && llama3_hdr >= 0) ||
+                          (tmpl_str.find("start_header_id") != std::string::npos) ||
+                          (tmpl_str.find("eot_id") != std::string::npos);
+
+        // Check if vocabulary has ChatML tokens
+        llama_token chatml_hdr = -1;
+        int n_cml = llama_tokenize(vocab, "<|im_start|>", 12, &chatml_hdr, 1, false, true);
+        bool has_chatml = (n_cml == 1 && chatml_hdr >= 0) ||
+                          (tmpl_str.find("im_start") != std::string::npos);
+
+        // Check if vocabulary has Gemma tokens
+        llama_token gemma_hdr = -1;
+        int n_gemma = llama_tokenize(vocab, "<start_of_turn>", 15, &gemma_hdr, 1, false, true);
+        bool has_gemma = (n_gemma == 1 && gemma_hdr >= 0);
+
+        if (has_llama3) {
+            // Authentic Llama 3.2 1B Instruct format
+            if (prompt.find("User: ") != std::string::npos && prompt.find("Assistant:") != std::string::npos) {
+                std::istringstream stream(prompt);
+                std::string line;
+                std::string current_role = "";
+                std::string current_content = "";
+                std::ostringstream out;
+                out << "<|begin_of_text|>";
+
+                auto flush_turn = [&](const std::string& role, const std::string& content) {
+                    if (role.empty() || content.empty()) return;
+                    out << "<|start_header_id|>" << role << "<|end_header_id|>\n\n" << content << "<|eot_id|>";
+                };
+
+                while (std::getline(stream, line)) {
+                    if (line.compare(0, 6, "User: ") == 0) {
+                        flush_turn(current_role, current_content);
+                        current_role = "user";
+                        current_content = line.substr(6);
+                    } else if (line.compare(0, 10, "Assistant:") == 0) {
+                        flush_turn(current_role, current_content);
+                        current_role = "assistant";
+                        current_content = line.length() > 11 ? line.substr(11) : "";
+                    } else if (!current_role.empty()) {
+                        if (!current_content.empty()) current_content += "\n";
+                        current_content += line;
+                    }
+                }
+                flush_turn(current_role, current_content);
+                out << "<|start_header_id|>assistant<|end_header_id|>\n\n";
+                formatted_prompt = out.str();
+            } else {
+                formatted_prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n" + prompt + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
+            }
+        } else if (has_gemma) {
+            formatted_prompt = "<start_of_turn>user\n" + prompt + "<end_of_turn>\n<start_of_turn>model\n";
+        } else {
+            formatted_prompt = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n";
+        }
     }
 
     // Authentic Tokenization via Model Vocabulary
@@ -182,44 +247,67 @@ int AutoregressiveEngine::generate_stream(
         return -4;
     }
 
-    // Reset memory for clean sequence
-    llama_memory_clear(llama_get_memory(m_ctx), true);
+    // KV Cache Prefix Matching & Context Reuse
+    size_t common_len = 0;
+    while (common_len < m_cached_tokens.size() &&
+           common_len < prompt_tokens.size() &&
+           m_cached_tokens[common_len] == prompt_tokens[common_len]) {
+        common_len++;
+    }
+
+    int n_past = 0;
+    if (common_len > 0 && prompt_tokens.size() < static_cast<size_t>(m_n_ctx - 16)) {
+        if (common_len < m_cached_tokens.size()) {
+            llama_memory_seq_rm(llama_get_memory(m_ctx), 0, static_cast<llama_pos>(common_len), -1);
+            m_cached_tokens.resize(common_len);
+        }
+        n_past = static_cast<int>(common_len);
+    } else {
+        llama_memory_clear(llama_get_memory(m_ctx), true);
+        m_cached_tokens.clear();
+        n_past = 0;
+    }
 
     float ttft_ms = 0.0f;
-    int n_past = 0;
+    int n_tokens_to_eval = static_cast<int>(prompt_tokens.size()) - n_past;
 
-    // Prefill Phase: Process prompt in batches of up to 512
+    // Prefill Phase: Process only delta tokens in batches of up to 512
     auto t_prefill_start = std::chrono::high_resolution_clock::now();
     llama_batch batch = llama_batch_init(512, 0, 1);
 
-    for (int i = 0; i < n_tokens; i += 512) {
-        if (m_abort_requested.load()) {
-            llama_batch_free(batch);
-            return -10;
-        }
+    if (n_tokens_to_eval > 0) {
+        for (int i = 0; i < n_tokens_to_eval; i += 512) {
+            if (m_abort_requested.load()) {
+                llama_batch_free(batch);
+                return 0;
+            }
 
-        int n_eval = std::min(512, n_tokens - i);
-        batch.n_tokens = 0;
-        for (int j = 0; j < n_eval; ++j) {
-            batch.token   [batch.n_tokens] = prompt_tokens[i + j];
-            batch.pos     [batch.n_tokens] = n_past + j;
-            batch.n_seq_id[batch.n_tokens] = 1;
-            batch.seq_id  [batch.n_tokens][0] = 0;
-            batch.logits  [batch.n_tokens] = (i + j == n_tokens - 1) ? 1 : 0;
-            batch.n_tokens++;
-        }
+            int n_eval = std::min(512, n_tokens_to_eval - i);
+            batch.n_tokens = 0;
+            for (int j = 0; j < n_eval; ++j) {
+                int token_idx = n_past + j;
+                batch.token   [batch.n_tokens] = prompt_tokens[token_idx];
+                batch.pos     [batch.n_tokens] = token_idx;
+                batch.n_seq_id[batch.n_tokens] = 1;
+                batch.seq_id  [batch.n_tokens][0] = 0;
+                batch.logits  [batch.n_tokens] = (token_idx == static_cast<int>(prompt_tokens.size()) - 1) ? 1 : 0;
+                batch.n_tokens++;
+            }
 
-        if (llama_decode(m_ctx, batch) != 0) {
-            llama_batch_free(batch);
-            callback("[StreamVex Error]: Prompt prefill failed in llama_decode.");
-            return -5;
+            if (llama_decode(m_ctx, batch) != 0) {
+                llama_batch_free(batch);
+                callback("[StreamVex Error]: Prompt prefill failed in llama_decode.");
+                return -5;
+            }
+            n_past += n_eval;
         }
-        n_past += n_eval;
     }
+
+    m_cached_tokens = prompt_tokens;
 
     auto t_prefill_end = std::chrono::high_resolution_clock::now();
     double prefill_sec = std::chrono::duration<double>(t_prefill_end - t_prefill_start).count();
-    m_telemetry.prefill_tok_per_sec = prefill_sec > 0.001 ? static_cast<float>(n_tokens / prefill_sec) : 0.0f;
+    m_telemetry.prefill_tok_per_sec = prefill_sec > 0.001 ? static_cast<float>(n_tokens_to_eval / prefill_sec) : 0.0f;
 
     // Autoregressive Generation Loop with modern llama_sampler_chain
     int n_vocab = llama_vocab_n_tokens(vocab);
@@ -266,16 +354,47 @@ int AutoregressiveEngine::generate_stream(
         }
 
         // Decode token to UTF-8 text chunk
-        char piece_buf[64] = {0};
+        char piece_buf[128] = {0};
         int n_chars = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf) - 1, 0, false);
         if (n_chars > 0) {
             piece_buf[n_chars] = '\0';
-            if (strstr(piece_buf, "<|im_end|>") || strstr(piece_buf, "<|endoftext|>") || strstr(piece_buf, "</s>")) {
+            std::string piece_str(piece_buf);
+
+            // Comprehensive stop tokens check
+            if (piece_str.find("<|eot_id|>") != std::string::npos ||
+                piece_str.find("<|endoftext|>") != std::string::npos ||
+                piece_str.find("<|end_of_text|>") != std::string::npos ||
+                piece_str.find("<|im_end|>") != std::string::npos ||
+                piece_str.find("<|im_start|>") != std::string::npos ||
+                piece_str.find("<|start_header_id|>") != std::string::npos ||
+                piece_str.find("<|end_header_id|>") != std::string::npos ||
+                piece_str.find("<end_of_turn>") != std::string::npos ||
+                piece_str.find("end_of_turn") != std::string::npos ||
+                piece_str.find("</s>") != std::string::npos ||
+                piece_str.find("<|turn_end|>") != std::string::npos) {
                 break;
             }
-            callback(piece_buf);
+
+            // Strip special control tokens from user-visible response
+            static const std::string SPECIAL_PATTERNS[] = {
+                "<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>",
+                "<|eot_id|>", "<|im_start|>", "<|im_end|>",
+                "<start_of_turn>", "<end_of_turn>", "end_of_turn",
+                "<|endoftext|>", "<|end_of_text|>"
+            };
+            for (const auto& pattern : SPECIAL_PATTERNS) {
+                size_t pos = 0;
+                while ((pos = piece_str.find(pattern, pos)) != std::string::npos) {
+                    piece_str.erase(pos, pattern.length());
+                }
+            }
+
+            if (!piece_str.empty()) {
+                callback(piece_str.c_str());
+            }
         }
 
+        m_cached_tokens.push_back(new_token_id);
         gen_count++;
 
         // Prepare next decode step (single token)
@@ -289,7 +408,7 @@ int AutoregressiveEngine::generate_stream(
 
         n_past++;
 
-        if (llama_decode(m_ctx, batch) != 0) {
+        if (n_past >= m_n_ctx || llama_decode(m_ctx, batch) != 0) {
             break;
         }
     }
@@ -375,8 +494,17 @@ bool AutoregressiveEngine::is_ready() const {
     return m_is_initialized.load() && m_model != nullptr && m_ctx != nullptr;
 }
 
+void AutoregressiveEngine::reset_context() {
+    std::lock_guard<std::mutex> lock(m_engine_mtx);
+    if (m_ctx) {
+        llama_memory_clear(llama_get_memory(m_ctx), true);
+    }
+    m_cached_tokens.clear();
+}
+
 void AutoregressiveEngine::release() {
     m_is_initialized.store(false);
+    m_cached_tokens.clear();
     if (m_ctx) {
         llama_free(m_ctx);
         m_ctx = nullptr;

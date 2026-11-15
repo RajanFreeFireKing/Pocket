@@ -855,7 +855,9 @@ class ChatInferenceManager(context: Context) {
             }
         }
 
-        onProgress?.invoke(RequestProgress.ProcessingPrompt)
+        if (runtime != RuntimeKind.StreamVex) {
+            onProgress?.invoke(RequestProgress.ProcessingPrompt)
+        }
         var lastLlamaMetrics: LlamaGenerationMetrics? = null
         var lastNonLlamaTokenCount: Int? = null
         val promptDeadline = PromptDeadline.forPrompt(inferencePrompt.length + memoryContext.length +
@@ -1306,7 +1308,7 @@ class ChatInferenceManager(context: Context) {
         publisher: StreamingResponsePublisher?,
         responseController: InferenceResponseController?,
         onUpdate: (String) -> Unit
-    ): String {
+    ): String = withContext(Dispatchers.IO) {
         timing?.startInference()
         var isFirstToken = true
         var tokenCount = 0
@@ -1331,9 +1333,8 @@ class ChatInferenceManager(context: Context) {
                     timing?.recordFirstToken()
                 }
                 tokenCount++
-                publisher?.appendDelta(token.text)
-                responseController?.appendDelta(token.text)
-                publisher?.notifyStructuredUpdate()
+                // onUpdate (effectiveOnUpdate) appends to both responseController and publisher.
+                // Dispatched once here to avoid duplicate token accumulation.
                 onUpdate(token.text)
             }
         }
@@ -1350,7 +1351,7 @@ class ChatInferenceManager(context: Context) {
                 evaluatedPromptTokens = prompt.length / 4
             )
         )
-        return publisher?.rawText() ?: responseController?.getFinalAnswer().orEmpty()
+        return@withContext publisher?.rawText() ?: responseController?.getFinalAnswer().orEmpty()
     }
 
     private suspend fun streamLlamaCpp(
@@ -1640,6 +1641,9 @@ class ChatInferenceManager(context: Context) {
             ggufConversationTools = toolsForNewConversation()
             ggufConversationHasTools = conversationToolSettings?.enabled == true && ggufConversationTools.isNotEmpty() && llamaCppEngine?.supportsToolCalling() == true
             ggufToolRecorder.clear()
+        }
+        if (runtime == RuntimeKind.StreamVex) {
+            runCatching { com.shounak.localmeshai.core.streamvex.runtime.StreamVexRuntime.getInstance().resetContext() }
         }
         if (runtime != RuntimeKind.LiteRtLm) return
         val mode = if (noThinking && isDefaultThinkingModel) {
