@@ -53,7 +53,7 @@ STREAMVEX_API int init_engine(const char* model_path) {
 
     // Auto-detect thread budget based on foreground/background status
     auto budget = streamvex::ResourceIntelligence::instance().compute_budget(0.0, !g_background_mode);
-    bool ok = g_engine.initialize(model_path, 2048, budget.recommended_threads);
+    bool ok = g_engine.initialize(model_path, 512, budget.recommended_threads);
     if (!ok) {
         return -2;
     }
@@ -94,7 +94,10 @@ STREAMVEX_API void release_engine(void) {
 STREAMVEX_API void reset_context(void) {
     std::lock_guard<std::mutex> lock(g_api_mtx);
     g_engine.reset_context();
-    std::cout << "[StreamVex] KV cache and context reset.\n";
+}
+
+STREAMVEX_API void streamvex_reset_context(void) {
+    reset_context();
 }
 
 STREAMVEX_API int get_last_generation_telemetry(char* out_json, size_t max_len) {

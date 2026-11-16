@@ -63,14 +63,14 @@ public:
      * @param n_threads Compute thread count (0 = auto-detect via ResourceIntelligence).
      * @return true on success, false on failure.
      */
-    bool initialize(const std::string& model_path, int n_ctx = 2048, int n_threads = 0);
+    bool initialize(const std::string& model_path, int n_ctx = 512, int n_threads = 2);
 
     /**
      * Streams generated tokens for the prompt to the callback in real time.
      * 
      * @param prompt Null-terminated user prompt.
      * @param callback Function invoked per generated token string piece.
-     * @param max_tokens Maximum number of tokens to generate (default 256).
+     * @param max_tokens Maximum number of tokens to generate (default 96).
      * @param temperature Sampling temperature (default 0.7).
      * @param top_k Top-K filtering (default 40).
      * @param top_p Top-P nucleus sampling (default 0.9).
@@ -79,7 +79,7 @@ public:
     int generate_stream(
         const std::string& prompt,
         std::function<void(const char* token)> callback,
-        int max_tokens = 256,
+        int max_tokens = 96,
         float temperature = 0.7f,
         int top_k = 40,
         float top_p = 0.9f
@@ -155,8 +155,10 @@ private:
     std::vector<llama_token> m_cached_tokens;
 
     GenerationTelemetry m_telemetry;
-    int m_n_ctx = 2048;
-    int m_n_threads = 4;
+    int m_n_ctx = 512;
+    int m_n_threads = 2;
+
+    void release_internal();
 };
 
 } // namespace streamvex

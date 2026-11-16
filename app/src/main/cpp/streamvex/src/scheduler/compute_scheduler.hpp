@@ -69,7 +69,7 @@ public:
     /**
      * Initializes the thread pool with the specified number of compute workers.
      */
-    void start(int num_workers = 4);
+    void start(int num_workers = 2);
     void stop();
 
     /**

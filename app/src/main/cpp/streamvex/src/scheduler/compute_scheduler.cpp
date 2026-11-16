@@ -38,7 +38,7 @@ ComputeScheduler& ComputeScheduler::instance() {
 
 ComputeScheduler::ComputeScheduler() {
     m_features = detect_cpu_features();
-    start(4);
+    start(2);
 }
 
 ComputeScheduler::~ComputeScheduler() {
@@ -95,7 +95,12 @@ CpuFeatures ComputeScheduler::detect_cpu_features() {
 void ComputeScheduler::start(int num_workers) {
     stop();
 
-    if (num_workers <= 0) num_workers = 4;
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 4;
+    int safe_max = std::max(1, std::min(2, static_cast<int>(hw / 4)));
+    if (num_workers <= 0 || num_workers > 2) num_workers = safe_max;
+    num_workers = std::min(2, num_workers);
+
     m_worker_cap.store(num_workers);
     m_stopping.store(false);
 
@@ -160,6 +165,20 @@ bool ComputeScheduler::set_thread_affinity(std::thread::native_handle_type handl
 }
 
 void ComputeScheduler::worker_loop(int worker_id) {
+#if defined(__linux__) || defined(__ANDROID__)
+    // Bind compute worker strictly to LITTLE / efficiency cores (0..3)
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    CPU_SET(1, &cpuset);
+    CPU_SET(2, &cpuset);
+    CPU_SET(3, &cpuset);
+    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+
+    // Set thread priority to background nice level 10
+    nice(10);
+#endif
+
     while (true) {
         PrioritizedTask task;
         {

@@ -24,7 +24,7 @@ AutoregressiveEngine::~AutoregressiveEngine() {
 bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, int n_threads) {
     std::lock_guard<std::mutex> lock(m_engine_mtx);
 
-    release();
+    release_internal();
 
     if (model_path.empty()) {
         std::cerr << "[AutoregressiveEngine] Error: Empty model path provided.\n";
@@ -67,18 +67,21 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
         return false;
     }
 
-    // Auto-budget threads if not specified
-    if (n_threads <= 0) {
-        auto budget = ResourceIntelligence::instance().compute_budget(file_size_mb, true);
-        n_threads = budget.recommended_threads;
+    // Rule 1: Strict thread throttling - Cap to maximum 2 threads (std::min(2, hardware_concurrency / 4))
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 4;
+    int max_safe_threads = std::max(1, std::min(2, static_cast<int>(hw / 4)));
+    if (n_threads <= 0 || n_threads > 2) {
+        n_threads = max_safe_threads;
     }
+    m_n_threads = std::min(2, n_threads);
 
-    m_n_ctx = n_ctx > 0 ? n_ctx : 2048;
-    m_n_threads = n_threads;
+    // Rule 2: Fast Context (default 512) and n_batch (64) for prompt prefill in < 200ms
+    m_n_ctx = (n_ctx > 0 && n_ctx <= 512) ? n_ctx : 512;
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = m_n_ctx;
-    cparams.n_batch = 512;
+    cparams.n_batch = 64;
     cparams.n_threads = m_n_threads;
     cparams.n_threads_batch = m_n_threads;
 
@@ -132,6 +135,18 @@ int AutoregressiveEngine::generate_stream(
         callback("[StreamVex Error]: Model is not loaded. Please initialize the engine first.");
         return -3;
     }
+
+    // Rule 1: Set thread priority to background nice(10) and bind strictly to LITTLE efficiency cores (0..3)
+#if defined(__linux__) || defined(__ANDROID__)
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    CPU_SET(1, &cpuset);
+    CPU_SET(2, &cpuset);
+    CPU_SET(3, &cpuset);
+    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+    nice(10);
+#endif
 
     m_abort_requested.store(false);
     auto t_start = std::chrono::high_resolution_clock::now();
@@ -271,21 +286,22 @@ int AutoregressiveEngine::generate_stream(
     float ttft_ms = 0.0f;
     int n_tokens_to_eval = static_cast<int>(prompt_tokens.size()) - n_past;
 
-    // Prefill Phase: Process only delta tokens in batches of up to 512
+    // Prefill Phase: Process only delta tokens in batches of up to 64 (Fast Context < 200ms)
     auto t_prefill_start = std::chrono::high_resolution_clock::now();
-    llama_batch batch = llama_batch_init(512, 0, 1);
+    llama_batch batch = llama_batch_init(64, 0, 1);
 
     if (n_tokens_to_eval > 0) {
-        for (int i = 0; i < n_tokens_to_eval; i += 512) {
+        int eval_start = n_past;
+        for (int i = 0; i < n_tokens_to_eval; i += 64) {
             if (m_abort_requested.load()) {
                 llama_batch_free(batch);
                 return 0;
             }
 
-            int n_eval = std::min(512, n_tokens_to_eval - i);
+            int n_eval = std::min(64, n_tokens_to_eval - i);
             batch.n_tokens = 0;
             for (int j = 0; j < n_eval; ++j) {
-                int token_idx = n_past + j;
+                int token_idx = eval_start + i + j;
                 batch.token   [batch.n_tokens] = prompt_tokens[token_idx];
                 batch.pos     [batch.n_tokens] = token_idx;
                 batch.n_seq_id[batch.n_tokens] = 1;
@@ -313,7 +329,7 @@ int AutoregressiveEngine::generate_stream(
     int n_vocab = llama_vocab_n_tokens(vocab);
     llama_token eos_token = llama_vocab_eos(vocab);
     int gen_count = 0;
-    int max_gen = max_tokens > 0 ? max_tokens : 256;
+    int max_gen = (max_tokens > 0 && max_tokens <= 96) ? max_tokens : 96;
 
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
@@ -333,6 +349,11 @@ int AutoregressiveEngine::generate_stream(
     for (int i = 0; i < max_gen; ++i) {
         if (m_abort_requested.load()) {
             break;
+        }
+
+        // Rule 1: 2ms cooperative yield every 2 tokens so Android OS never freezes
+        if (gen_count > 0 && gen_count % 2 == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
 
         // Cooperative scheduling: check if voice AI has higher priority
@@ -503,6 +524,11 @@ void AutoregressiveEngine::reset_context() {
 }
 
 void AutoregressiveEngine::release() {
+    std::lock_guard<std::mutex> lock(m_engine_mtx);
+    release_internal();
+}
+
+void AutoregressiveEngine::release_internal() {
     m_is_initialized.store(false);
     m_cached_tokens.clear();
     if (m_ctx) {
