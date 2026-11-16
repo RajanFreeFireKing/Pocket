@@ -96,10 +96,10 @@ void ComputeScheduler::start(int num_workers) {
     stop();
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    int safe_max = std::max(1, std::min(3, static_cast<int>(hw / 2)));
-    if (num_workers <= 0 || num_workers > 3) num_workers = safe_max;
-    num_workers = std::min(3, num_workers);
+    if (hw == 0) hw = 8;
+    int safe_max = std::max(2, std::min(4, static_cast<int>(hw)));
+    if (num_workers <= 0 || num_workers > 4) num_workers = safe_max;
+    num_workers = std::min(4, num_workers);
 
     m_worker_cap.store(num_workers);
     m_stopping.store(false);
@@ -166,16 +166,16 @@ bool ComputeScheduler::set_thread_affinity(std::thread::native_handle_type handl
 
 void ComputeScheduler::worker_loop(int worker_id) {
 #if defined(__linux__) || defined(__ANDROID__)
-    // Bind compute worker to efficiency and mid cores (0..5)
+    // Allow compute workers to burst across big and mid cores (cores 0..7)
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    for (int c = 0; c < 6; ++c) {
+    for (int c = 0; c < 8; ++c) {
         CPU_SET(c, &cpuset);
     }
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 
-    // Set thread priority to nice level 5
-    nice(5);
+    // Set thread priority to nice level 0 (SCHED_OTHER normal priority)
+    nice(0);
 #endif
 
     while (true) {

@@ -24,12 +24,21 @@ AutoregressiveEngine::~AutoregressiveEngine() {
 bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, int n_threads) {
     std::lock_guard<std::mutex> lock(m_engine_mtx);
 
-    release_internal();
-
     if (model_path.empty()) {
         std::cerr << "[AutoregressiveEngine] Error: Empty model path provided.\n";
         return false;
     }
+
+    // Instant Zero-Wait Cache Reuse: keep loaded model in memory across turns (0ms reload)
+    if (m_is_initialized.load() && m_model != nullptr && m_model_path == model_path && m_ctx != nullptr) {
+        llama_memory_clear(llama_get_memory(m_ctx), true);
+        m_cached_tokens.clear();
+        m_abort_requested.store(false);
+        std::cout << "[AutoregressiveEngine] Instant cache reuse for loaded model: " << model_path << "\n";
+        return true;
+    }
+
+    release_internal();
 
     struct stat st;
     if (stat(model_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
@@ -37,27 +46,12 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
         return false;
     }
 
-    double file_size_mb = static_cast<double>(st.st_size) / (1024.0 * 1024.0);
-
-    // Validate memory safety against live mobile hardware
-    std::string rejection_reason;
-    double estimated_kv_mb = (static_cast<double>(n_ctx) / 1024.0) * 128.0;
-    if (!ResourceIntelligence::instance().can_safely_fit(file_size_mb, estimated_kv_mb, rejection_reason)) {
-        std::cerr << "[AutoregressiveEngine] Warning: " << rejection_reason << "\n";
-        // Continue if user forced initialization, but log warning
-    }
-
-    // Inspect GGUF structure
-    if (m_gguf_reader->open(model_path)) {
-        m_telemetry.architecture = "GGUF-v" + std::to_string(m_gguf_reader->version());
-    } else {
-        m_telemetry.architecture = "GGUF";
-    }
+    m_telemetry.architecture = "GGUF";
 
     // Initialize llama.cpp backend
     llama_backend_init();
 
-    // Model configuration
+    // Model configuration (Rule 1 & 3: Instant zero-wait mmap loading without mlock)
     llama_model_params mparams = llama_model_default_params();
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
 
@@ -67,34 +61,40 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
         return false;
     }
 
-    // Upgrade 1: Safe 3-thread cap on efficiency/mid cores with nice(5)
+    // Smart Big-Core Burst Scheduling: 4 decode threads, 6 batch threads across big/mid cores
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    int max_safe_threads = std::max(1, std::min(3, static_cast<int>(hw / 2)));
-    if (n_threads <= 0 || n_threads > 3) {
-        n_threads = max_safe_threads;
-    }
-    m_n_threads = std::min(3, n_threads);
+    if (hw == 0) hw = 8;
+    m_n_threads = std::min(4, static_cast<int>(hw));
+    int n_threads_batch = std::min(6, static_cast<int>(hw));
 
-    // Fast Context (default 512) and n_batch (128) for rapid prompt prefill and instant emission
+    // Vectorized context (512) and batch (512) with Quantized Q8_0 KV Cache + Flash Attention
     m_n_ctx = (n_ctx > 0 && n_ctx <= 512) ? n_ctx : 512;
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = m_n_ctx;
-    cparams.n_batch = 128;
+    cparams.n_batch = 512;
+    cparams.n_ubatch = 512;
     cparams.n_threads = m_n_threads;
-    cparams.n_threads_batch = m_n_threads;
+    cparams.n_threads_batch = n_threads_batch;
+    cparams.type_k = GGML_TYPE_Q8_0;
+    cparams.type_v = GGML_TYPE_Q8_0;
+    cparams.flash_attn = true;
 
     m_ctx = llama_init_from_model(m_model, cparams);
     if (!m_ctx) {
-        std::cerr << "[AutoregressiveEngine] Error: llama_init_from_model failed.\n";
-        llama_model_free(m_model);
-        m_model = nullptr;
-        return false;
+        cparams.type_k = GGML_TYPE_F16;
+        cparams.type_v = GGML_TYPE_F16;
+        cparams.flash_attn = false;
+        m_ctx = llama_init_from_model(m_model, cparams);
+        if (!m_ctx) {
+            std::cerr << "[AutoregressiveEngine] Error: llama_init_from_model failed.\n";
+            llama_model_free(m_model);
+            m_model = nullptr;
+            return false;
+        }
     }
 
     m_model_path = model_path;
-    m_streamer->open_file(model_path);
 
     m_telemetry = GenerationTelemetry();
     m_telemetry.model_name = model_path;
@@ -111,6 +111,7 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
               << " | Vocab: " << (vocab ? llama_vocab_n_tokens(vocab) : 0)
               << " | Context: " << m_n_ctx
               << " | Threads: " << m_n_threads
+              << " | Batch Threads: " << n_threads_batch
               << " | Resident RAM: " << std::fixed << std::setprecision(1) << m_telemetry.baseline_ram_mb << " MB\n";
 
     return true;
@@ -136,15 +137,15 @@ int AutoregressiveEngine::generate_stream(
         return -3;
     }
 
-    // Safe thread priority nice(5) and bind to efficiency/mid cores (0..5) leaving big cores free for UI
+    // Smart Big-Core Burst Scheduling: burst across big/mid cores (0..7) with nice(0)
 #if defined(__linux__) || defined(__ANDROID__)
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    for (int c = 0; c < 6; ++c) {
+    for (int c = 0; c < 8; ++c) {
         CPU_SET(c, &cpuset);
     }
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-    nice(5);
+    nice(0);
 #endif
 
     m_abort_requested.store(false);
@@ -285,19 +286,19 @@ int AutoregressiveEngine::generate_stream(
     float ttft_ms = 0.0f;
     int n_tokens_to_eval = static_cast<int>(prompt_tokens.size()) - n_past;
 
-    // Prefill Phase: Process delta tokens in batches of up to 128 (Fast Context prefill)
+    // Prefill Phase: Process prompt in a single vectorized batch (n_batch = 512)
     auto t_prefill_start = std::chrono::high_resolution_clock::now();
-    llama_batch batch = llama_batch_init(128, 0, 1);
+    llama_batch batch = llama_batch_init(512, 0, 1);
 
     if (n_tokens_to_eval > 0) {
         int eval_start = n_past;
-        for (int i = 0; i < n_tokens_to_eval; i += 128) {
+        for (int i = 0; i < n_tokens_to_eval; i += 512) {
             if (m_abort_requested.load()) {
                 llama_batch_free(batch);
                 return 0;
             }
 
-            int n_eval = std::min(128, n_tokens_to_eval - i);
+            int n_eval = std::min(512, n_tokens_to_eval - i);
             batch.n_tokens = 0;
             for (int j = 0; j < n_eval; ++j) {
                 int token_idx = eval_start + i + j;
@@ -322,13 +323,13 @@ int AutoregressiveEngine::generate_stream(
 
     auto t_prefill_end = std::chrono::high_resolution_clock::now();
     double prefill_sec = std::chrono::duration<double>(t_prefill_end - t_prefill_start).count();
-    m_telemetry.prefill_tok_per_sec = prefill_sec > 0.001 ? static_cast<float>(n_tokens_to_eval / prefill_sec) : 0.0f;
+    m_telemetry.prefill_tok_per_sec = prefill_sec > 0.0001 ? static_cast<float>(n_tokens_to_eval / prefill_sec) : 0.0f;
 
     // Autoregressive Generation Loop with modern llama_sampler_chain
     int n_vocab = llama_vocab_n_tokens(vocab);
     llama_token eos_token = llama_vocab_eos(vocab);
     int gen_count = 0;
-    int max_gen = (max_tokens > 0 && max_tokens <= 96) ? max_tokens : 96;
+    int max_gen = (max_tokens > 0 && max_tokens <= 128) ? max_tokens : 128;
 
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
@@ -350,14 +351,14 @@ int AutoregressiveEngine::generate_stream(
             break;
         }
 
-        // Upgrade 1: Non-blocking cooperative yield every 8 tokens so CPU stays smooth without slowing token emission
-        if (gen_count > 0 && gen_count % 8 == 0) {
+        // Lightweight cooperative yield every 16 tokens (zero sleep_for delays)
+        if (gen_count > 0 && gen_count % 16 == 0) {
             sched_yield();
         }
 
-        // Cooperative scheduling: check if voice AI has higher priority
+        // Cooperative scheduling: yield to voice AI if high priority work is active
         if (ComputeScheduler::instance().should_yield(WorkloadPriority::P3_LLM_INFERENCE)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            sched_yield();
         }
 
         llama_token new_token_id = llama_sampler_sample(smpl, m_ctx, -1);

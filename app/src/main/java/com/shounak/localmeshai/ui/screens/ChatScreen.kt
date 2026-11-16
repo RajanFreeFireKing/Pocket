@@ -1282,9 +1282,9 @@ fun ChatScreen(
                         ) {
                             val loadingText = when {
                                 selectedSupportsAttachments && isVisionInitializing -> "Initialising multimodal model safely…"
-                                selectedSupportsAttachments && isVisionAnalyzing -> "Reading input…"
+                                selectedSupportsAttachments && isVisionAnalyzing -> "Generating live response…"
                                 selectedSupportsAttachments && isVisionStopping -> "Stopping multimodal model…"
-                                selectedSupportsAttachments -> "Initialising multimodal model safely…"
+                                isVisionInitializing -> "Initialising multimodal model safely…"
                                 activeState is ModelLoadState.Loading -> {
                                     val stageName = when (val st = activeState.stage) {
                                         ModelLoadStage.WaitingForRuntime -> "Waiting for runtime"
