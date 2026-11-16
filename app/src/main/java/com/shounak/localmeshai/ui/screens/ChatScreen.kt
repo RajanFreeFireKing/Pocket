@@ -4187,29 +4187,57 @@ private fun ChatBubble(
             Row(
                 modifier = Modifier.fillMaxWidth(0.85f),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                com.shounak.localmeshai.features.MessageRevisionActions(text, onEditPrompt, onRegenerate, hazeState)
-                if (!isUser) {
-                    MessageToolButton(
-                        icon = Icons.Default.Fullscreen,
-                        contentDescription = "Fullscreen message",
-                        hazeState = hazeState,
-                        tintColor = MaterialTheme.colorScheme.primary,
-                        onClick = onFullscreenClick,
-                    )
-                    MessageToolButton(
-                        icon = Icons.Default.ContentCopy,
-                        contentDescription = "Copy message",
-                        hazeState = hazeState,
-                        tintColor = MaterialTheme.colorScheme.primary,
+                // Speaker icon button (🔊) at bottom-left corner of completed AI chat bubble
+                if (!isUser && !isStreaming && displayText.isNotBlank() && !displayText.isStreamingPlaceholderText() && !hasError) {
+                    val speakingMsgId = com.shounak.localmeshai.utils.HindiTtsManager.speakingMessageId.value
+                    val isSpeaking = speakingMsgId == messageId
+                    LiquidGlassButton(
                         onClick = {
-                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                                as android.content.ClipboardManager
-                            val copyText = if (isUser) text else ModelOutputSanitizer.clean(text)
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("message", copyText))
-                        }
-                    )
+                            com.shounak.localmeshai.utils.HindiTtsManager.speak(context, messageId, displayText)
+                        },
+                        hazeState = hazeState,
+                        modifier = Modifier.size(34.dp),
+                        shape = RoundedCornerShape(17.dp),
+                        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            text = if (isSpeaking) "⏹️" else "🔊",
+                            fontSize = 14.sp
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    com.shounak.localmeshai.features.MessageRevisionActions(text, onEditPrompt, onRegenerate, hazeState)
+                    if (!isUser) {
+                        MessageToolButton(
+                            icon = Icons.Default.Fullscreen,
+                            contentDescription = "Fullscreen message",
+                            hazeState = hazeState,
+                            tintColor = MaterialTheme.colorScheme.primary,
+                            onClick = onFullscreenClick,
+                        )
+                        MessageToolButton(
+                            icon = Icons.Default.ContentCopy,
+                            contentDescription = "Copy message",
+                            hazeState = hazeState,
+                            tintColor = MaterialTheme.colorScheme.primary,
+                            onClick = {
+                                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                val copyText = if (isUser) text else ModelOutputSanitizer.clean(text)
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText("message", copyText))
+                            }
+                        )
+                    }
                 }
             }
         }

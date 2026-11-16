@@ -67,21 +67,21 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
         return false;
     }
 
-    // Rule 1: Strict thread throttling - Cap to maximum 2 threads (std::min(2, hardware_concurrency / 4))
+    // Upgrade 1: Safe 3-thread cap on efficiency/mid cores with nice(5)
     unsigned int hw = std::thread::hardware_concurrency();
     if (hw == 0) hw = 4;
-    int max_safe_threads = std::max(1, std::min(2, static_cast<int>(hw / 4)));
-    if (n_threads <= 0 || n_threads > 2) {
+    int max_safe_threads = std::max(1, std::min(3, static_cast<int>(hw / 2)));
+    if (n_threads <= 0 || n_threads > 3) {
         n_threads = max_safe_threads;
     }
-    m_n_threads = std::min(2, n_threads);
+    m_n_threads = std::min(3, n_threads);
 
-    // Rule 2: Fast Context (default 512) and n_batch (64) for prompt prefill in < 200ms
+    // Fast Context (default 512) and n_batch (128) for rapid prompt prefill and instant emission
     m_n_ctx = (n_ctx > 0 && n_ctx <= 512) ? n_ctx : 512;
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = m_n_ctx;
-    cparams.n_batch = 64;
+    cparams.n_batch = 128;
     cparams.n_threads = m_n_threads;
     cparams.n_threads_batch = m_n_threads;
 
@@ -136,16 +136,15 @@ int AutoregressiveEngine::generate_stream(
         return -3;
     }
 
-    // Rule 1: Set thread priority to background nice(10) and bind strictly to LITTLE efficiency cores (0..3)
+    // Safe thread priority nice(5) and bind to efficiency/mid cores (0..5) leaving big cores free for UI
 #if defined(__linux__) || defined(__ANDROID__)
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(0, &cpuset);
-    CPU_SET(1, &cpuset);
-    CPU_SET(2, &cpuset);
-    CPU_SET(3, &cpuset);
+    for (int c = 0; c < 6; ++c) {
+        CPU_SET(c, &cpuset);
+    }
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-    nice(10);
+    nice(5);
 #endif
 
     m_abort_requested.store(false);
@@ -286,19 +285,19 @@ int AutoregressiveEngine::generate_stream(
     float ttft_ms = 0.0f;
     int n_tokens_to_eval = static_cast<int>(prompt_tokens.size()) - n_past;
 
-    // Prefill Phase: Process only delta tokens in batches of up to 64 (Fast Context < 200ms)
+    // Prefill Phase: Process delta tokens in batches of up to 128 (Fast Context prefill)
     auto t_prefill_start = std::chrono::high_resolution_clock::now();
-    llama_batch batch = llama_batch_init(64, 0, 1);
+    llama_batch batch = llama_batch_init(128, 0, 1);
 
     if (n_tokens_to_eval > 0) {
         int eval_start = n_past;
-        for (int i = 0; i < n_tokens_to_eval; i += 64) {
+        for (int i = 0; i < n_tokens_to_eval; i += 128) {
             if (m_abort_requested.load()) {
                 llama_batch_free(batch);
                 return 0;
             }
 
-            int n_eval = std::min(64, n_tokens_to_eval - i);
+            int n_eval = std::min(128, n_tokens_to_eval - i);
             batch.n_tokens = 0;
             for (int j = 0; j < n_eval; ++j) {
                 int token_idx = eval_start + i + j;
@@ -351,9 +350,9 @@ int AutoregressiveEngine::generate_stream(
             break;
         }
 
-        // Rule 1: 2ms cooperative yield every 2 tokens so Android OS never freezes
-        if (gen_count > 0 && gen_count % 2 == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        // Upgrade 1: Non-blocking cooperative yield every 8 tokens so CPU stays smooth without slowing token emission
+        if (gen_count > 0 && gen_count % 8 == 0) {
+            sched_yield();
         }
 
         // Cooperative scheduling: check if voice AI has higher priority

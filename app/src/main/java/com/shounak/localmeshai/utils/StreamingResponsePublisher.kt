@@ -15,7 +15,7 @@ internal class StreamingResponsePublisher(
     private val transform: (String) -> String,
     private val publish: (String) -> Unit,
     private val clock: () -> Long = System::nanoTime,
-    private val intervalNanos: Long = 50_000_000L,
+    private val intervalNanos: Long = 16_000_000L, // 60fps real-time smooth streaming
     private val finalTransform: (String) -> String = transform,
     private val snapshotProvider: (() -> StructuredResponseSnapshot)? = null,
     private val publishSnapshot: ((StructuredResponseSnapshot) -> Unit)? = null
