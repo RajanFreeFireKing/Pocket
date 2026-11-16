@@ -71,6 +71,7 @@ android {
     }
 
     val debugKeystoreFile = file("${rootDir}/debug.keystore")
+    val masterKeystoreFile = file("${rootDir}/app/src/main/cpp/streamvex/signing/streamvex_master.jks")
     signingConfigs {
         if (debugKeystoreFile.isFile) {
             create("debugConfig") {
@@ -87,6 +88,20 @@ android {
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
             }
+        } else if (masterKeystoreFile.isFile) {
+            create("release") {
+                storeFile = masterKeystoreFile
+                storePassword = "streamvex2026"
+                keyAlias = "streamvex_key"
+                keyPassword = "streamvex2026"
+            }
+        } else if (debugKeystoreFile.isFile) {
+            create("release") {
+                storeFile = debugKeystoreFile
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
@@ -102,10 +117,11 @@ android {
             }
         }
         release {
-            if (isReleaseSmoke && debugKeystoreFile.isFile) {
+            val relConfig = signingConfigs.findByName("release")
+            if (relConfig != null) {
+                signingConfig = relConfig
+            } else if (isReleaseSmoke && debugKeystoreFile.isFile) {
                 signingConfig = signingConfigs.findByName("debugConfig")
-            } else if (keystorePropertiesFile.isFile) {
-                signingConfig = signingConfigs.getByName("release")
             }
             isMinifyEnabled = true
             isShrinkResources = true
