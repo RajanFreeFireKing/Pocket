@@ -78,13 +78,13 @@ bool AutoregressiveEngine::initialize(const std::string& model_path, int n_ctx, 
     cparams.n_threads_batch = n_threads_batch;
     cparams.type_k = GGML_TYPE_Q8_0;
     cparams.type_v = GGML_TYPE_Q8_0;
-    cparams.flash_attn = true;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
 
     m_ctx = llama_init_from_model(m_model, cparams);
     if (!m_ctx) {
         cparams.type_k = GGML_TYPE_F16;
         cparams.type_v = GGML_TYPE_F16;
-        cparams.flash_attn = false;
+        cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
         m_ctx = llama_init_from_model(m_model, cparams);
         if (!m_ctx) {
             std::cerr << "[AutoregressiveEngine] Error: llama_init_from_model failed.\n";
