@@ -2392,6 +2392,7 @@ fun VisionChatBubble(
             rawText
         }
     }
+    val hasError = !isUser && (errorMessage != null || displayText.startsWith("⚠️ Error:"))
     val segments = if (isUser && (!audioPath.isNullOrBlank() || !documentName.isNullOrBlank())) {
         listOf(ModelAnswerSegment.Text(displayText))
     } else {

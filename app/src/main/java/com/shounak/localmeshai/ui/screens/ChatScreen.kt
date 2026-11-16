@@ -3936,6 +3936,7 @@ private fun ChatBubble(
     )
     val parsedContent = presentation.parsedContent
     val displayText = presentation.displayText
+    val hasError = !isUser && (errorMessage != null || displayText.startsWith("⚠️ Error:"))
     val segments = presentation.segments
     val showStreamingDots = presentation.showStreamingDots
     val entryValue = entryProgress.value
